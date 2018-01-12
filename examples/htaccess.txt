@@ -1,0 +1,20 @@
+#
+# Comments are allowed
+#
+AuthType Basic
+<limit GET>
+  order deny,allow
+  allow from 128.175 boffo.net
+  deny from all
+  require group 4000
+  Satisfy any
+</limit>
+<limitexcept GET >
+  allow from
+  deny from all
+  satisfy all
+</limitexcept>
+AddType application/vnd.ms-excel   xls
+AddType application/vnd.ms-powerpoint   ppt
+AddType application/msword   doc
+Satisfy any

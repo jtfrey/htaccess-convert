@@ -1,0 +1,10 @@
+#
+# Comments are allowed
+#
+AuthType Basic
+AuthName "Puke is fun"
+AuthBasicProvider ldap
+<limit GET>
+  require group 4000
+</limit>
+

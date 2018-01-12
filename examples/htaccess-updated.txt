@@ -1,0 +1,12 @@
+#
+# An updated htaccess file
+#
+<RequireAll>
+  Require not ip 10
+  <RequireNone>
+    Require ldap-group cn=1111,ou=Groups,o=udel.edu
+    Require ldap-group cn=1400,ou=Groups,o=udel.edu
+    Require user frey
+  </RequireNone>
+</RequireAll>
+
