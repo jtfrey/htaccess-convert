@@ -203,6 +203,7 @@ sub parse_htaccess
       elsif ( $firstWord eq 'allow' ) {
         # Loop over words -- they should be hostnames/IPs:
         my @hosts;
+        my $ignore = 0;
         foreach my $word (@words) {
           if ( $word =~ m/^(allow|from)$/i ) {
             next;
@@ -211,6 +212,7 @@ sub parse_htaccess
             @hosts = ();
             my %directive = ( 'type' => 'require', 'negate' => 0, 'subtype' => 'all granted' );
             push(@require, \%directive);
+            $ignore = 1;
             last;
           }
           elsif ( is_valid_host($word) ) {
@@ -222,6 +224,8 @@ sub parse_htaccess
         if ( $#hosts >= 0 ) {
           my %directive = ( 'type' => 'require', 'negate' => 0, 'subtype' => 'ip', 'values' => \@hosts );
           push(@require, \%directive);
+        } elsif ( ! $ignore ) {
+          print $DEBUG_FH "WARNING:  empty Allow directive\n" if $verbose;
         }
       }
 ##
@@ -230,6 +234,7 @@ sub parse_htaccess
       elsif ( $firstWord eq 'deny' ) {
         # Loop over words -- they should be hostnames/IPs:
         my @hosts;
+        my $ignore = 0;
         foreach my $word (@words) {
           if ( $word =~ m/^(deny|from)$/i ) {
             next;
@@ -238,6 +243,7 @@ sub parse_htaccess
             @hosts = ();
             my %directive = ( 'type' => 'require', 'negate' => 0, 'subtype' => 'all denied' );
             push(@require, \%directive);
+            $ignore = 1;
             last;
           }
           elsif ( is_valid_host($word) ) {
@@ -249,6 +255,8 @@ sub parse_htaccess
         if ( $#hosts >= 0 ) {
           my %directive = ( 'type' => 'require', 'negate' => 1, 'subtype' => 'ip', 'values' => \@hosts );
           push(@require, \%directive);
+        } elsif ( ! $ignore ) {
+          print $DEBUG_FH "WARNING:  empty Deny directive\n" if $verbose;
         }
       }
 ##
