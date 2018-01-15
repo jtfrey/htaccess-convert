@@ -63,19 +63,89 @@ INFO: enter unparse_htaccess(2)
 INFO: exit unparse_htaccess(2)
 INFO: exit unparse_htaccess(0)
 
-$ cat htaccess-conf.txt
+$ cat htaccess-conv.txt
 #
 # Comments are allowed
 #
 <Limit GET>
-  Require ip 128.175 boffo.net
-  Require all denied
-  Require ldap-group cn=4000,ou=Groups,o=udel.edu
+  <RequireAny>
+    Require ip 128.175 boffo.net
+    Require all denied
+    Require ldap-group cn=4000,ou=Groups,o=udel.edu
+  </RequireAny>
 </Limit>
 <LimitExcept GET>
-  Require all denied
+  <RequireAll>
+    Require all denied
+  </RequireAll>
 </LimitExcept>
 AddType application/vnd.ms-excel   xls
 AddType application/vnd.ms-powerpoint   ppt
 AddType application/msword   doc
 ```
+
+The converter also attempts to detect the erroneously-documented use of `<Limit GET>` and remove it:
+
+```
+$ cat examples/htaccess-simple.txt
+#
+# Comments are allowed
+#
+AuthType Basic
+AuthName "Auth is fun"
+AuthBasicProvider ldap
+<limit GET>
+  require group 4000
+</limit>
+
+$ ./htaccess-convert.pl --input=examples/htaccess-simple.txt
+#
+# Comments are allowed
+#
+##
+## htaccess-convert removed unnecessary <limit GET> block
+##
+Require ldap-group cn=4000,ou=Groups,o=udel.edu
+```
+
+If multiple `<Limit>` blocks are present, then the converter ensures that *at least* the GET and POST methods are covered:
+
+```
+$ cat examples/htaccess-limits.txt 
+<limit GET>
+  order deny,allow
+  allow from 128.175 boffo.net
+  deny from all
+  require group 4000
+  Satisfy any
+</limit>
+<limit PUT>
+  allow from 128.4
+  deny from all
+  satisfy all
+</LIMIT>
+
+$ ./htaccess-convert.pl < examples/htaccess-limits.txt 
+<Limit GET>
+  <RequireAny>
+    Require ip 128.175 boffo.net
+    Require all denied
+    Require ldap-group cn=4000,ou=Groups,o=udel.edu
+  </RequireAny>
+</Limit>
+<Limit PUT>
+  <RequireAll>
+    Require ip 128.4
+    Require all denied
+  </RequireAll>
+</Limit>
+##
+## Added by htaccess-convert
+## Augments the other method-based <limit> blocks already present
+##
+<Limit POST>
+  Require all denied
+</Limit>
+
+```
+

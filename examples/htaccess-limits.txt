@@ -1,0 +1,12 @@
+<limit GET>
+  order deny,allow
+  allow from 128.175 boffo.net
+  deny from all
+  require group 4000
+  Satisfy any
+</limit>
+<limit PUT>
+  allow from 128.4
+  deny from all
+  satisfy all
+</LIMIT>

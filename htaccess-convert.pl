@@ -21,6 +21,26 @@ my %ignore = (
       'authbasicprovider'   => 1,
     );
 
+#
+# The HTTP methods that MUST be accounted for in htaccess files:
+#
+my @mandatory_methods = qw(GET POST);
+
+#
+# Map our lowercase'd tag form to the "pretty" form in output:
+#
+my %require_group_pretty = (
+				'requireall' => 'RequireAll',
+				'requireany' => 'RequireAny',
+				'requirenone' => 'RequireNone'
+			);
+
+#
+# @function usage($rc)
+#
+# Display a simple help summary to stdout and end the progrm.  The single
+# argument, $rc, is the exit value for the program.
+#
 sub usage
 {
   my( $rc ) = @_;
@@ -50,6 +70,7 @@ my $help = 0;
 my $input_file = '-';
 my $output_file = '-';
 my $debug_file = '-';
+my $main_rc = 0;
 
 Getopt::Long::Configure ("bundling");
 GetOptions(
@@ -82,16 +103,37 @@ if ( $debug_file && $debug_file ne '-' ) {
   open($DEBUG_FH, ">", $debug_file) or die "ERROR: unable to open $debug_file for writing: $!";
 }
 
-sub require_group_pretty
+#
+# @function comment_node({str1 {, str2, ...}})
+#
+# Create a verbatim config node containing a comment.  If no strings are
+# passed, a standard "htaccess-convert did this" comment is produced.  Otherwise,
+# each string argument to the function is appended with a leading "## " prefix.
+# For this reason, none of the argument strings should contain newlines.
+#
+sub comment_node
 {
-  my ($tag) = @_;
-
-  return 'RequireAll' if ( $tag eq 'requireall' );
-  return 'RequireAny' if ( $tag eq 'requireany' );
-  return 'RequireNone' if ( $tag eq 'requirenone' );
-  return '';
+	my %node = ( 'type' => 'verbatim' );
+	my $comment = '##';
+	
+	if ( scalar(@_) <= 0 ) {
+		$comment = "##\n## Added by htaccess-convert\n##";
+	} else {
+		foreach my $line (@_) {
+			$comment = $comment . "\n## " . $line;
+		}
+		$comment = $comment . "\n##" if ( $comment ne '##' );
+	}
+	$node{'value'} = $comment;
+	return \%node;
 }
 
+#
+# @function is_valid_host($host)
+#
+# Returns non-zero if the single string argument appears to be a DNS name or an
+# IPv4 address, CIDR, or address/netmask combination.  Otherwise, returns zero.
+#
 sub is_valid_host
 {
   my ($host) = @_;
@@ -107,12 +149,139 @@ sub is_valid_host
   return 0;
 }
 
+#
+# @function hash_of_all_methods_except({method1 {, method2, ..}})
+#
+# Given an array of HTTP methods (all caps) passed to this function, the return
+# value is a hash containing all mandatory methods that were NOT mentioned.
+#
+sub hash_of_all_methods_except
+{
+	my (@methods) = @_;
+	my $method;
+	my %list = map({ $_ => 1 } @mandatory_methods);
+	
+	foreach $method (@methods) {
+		delete $list{$method} if ( exists $list{$method} );
+	}
+	return %list;
+}
+
+#
+# @function fixup_limit_directives($directives)
+#
+# Attempt to locate and remove/replace/augment any <limit> directives that
+# are present in the array of configuration directives referenced by $directives.
+#
+# Most notably, the appearance of a lone <limit GET> block is assumed to NOT be
+# the actual intent (but instead, adherence to bad documentation) and is replaced by
+# the child directives present within the <limit GET> block.
+#
+# Otherwise, any mandatory directives NOT covered by <limit> and <limitexcept>
+# directives produce an added <limit> block that denies requests that use those
+# methods.
+#
+sub fixup_limit_directives
+{
+	my ($directives) = @_;
+	my $directive;
+	my %methods_seen;
+	
+	# We expect an array:
+	return $directives if ( reftype($directives) ne 'ARRAY' );
+	
+	# Check for a <limit GET> container in the current list level:
+	foreach $directive (@$directives) {
+    if ( reftype($directive) eq 'HASH' ) {
+    	if ( $directive->{'type'} eq 'limit-method' ) {
+        my $methods = $directive->{'methods'};
+        
+        # Add the methods covered by this directive:
+        if ( ! $directive->{'negate'} ) {
+	        %methods_seen = (%methods_seen, map({ $_ => 1 } @$methods));
+  			} else {
+  				%methods_seen = (%methods_seen, hash_of_all_methods_except(@$methods));
+     		}
+      }
+    }
+	}
+	
+	# Is it JUST the GET method?
+	my $how_many_methods = scalar(keys %methods_seen);
+	
+	if ( $how_many_methods == 1 && exists $methods_seen{'GET'} ) {
+		#
+		# Remove the <limit GET> block and replace with the directives that were
+		# inside that block.
+		#
+		my @new_list;
+		
+		foreach $directive (@$directives) {
+			my $was_handled = 0;
+			
+			if ( reftype($directive) eq 'HASH' ) {
+				if ( $directive->{'type'} eq 'limit-method' ) {
+					push(@new_list, comment_node('htaccess-convert removed unnecessary <limit GET> block'));
+					
+					# Loop over the child directives:
+					foreach $directive (@{$directive->{'children'}}) {
+						push(@new_list, $directive);
+					}
+					$was_handled = 1;
+				}
+			}
+			if ( ! $was_handled ) {
+				push(@new_list, $directive);
+			}
+		}
+		$directives = \@new_list;
+	} elsif ( $how_many_methods > 1 ) {
+		#
+		# Check for any unhandled mandatory methods and add <limit> block to
+		# cover them if necessary:
+		#
+		my %need_methods = map({ $_ => 1} @mandatory_methods);
+		
+		foreach my $method (keys %methods_seen) {
+			if ( exists $need_methods{$method} ) {
+				delete $need_methods{$method};
+			}
+		}
+		if ( scalar(keys %need_methods) > 0 ) {
+			my %deny_all = ( 'type' => 'require', 'negate' => 0, 'subtype' => 'all denied' );
+			my @children = (\%deny_all);
+			my @methods = keys %need_methods;
+			my %limit = ( 'type' => 'limit-method', 'negate' => 0, 'methods' => \@methods, 'children' => \@children );
+			push(@$directives, comment_node('Added by htaccess-convert', 'Augments the other method-based <limit> blocks already present'));
+			push(@$directives, \%limit);
+		}
+	}
+	return $directives;
+}
+
+#
+# @function parse_htaccess($block_name, $verbatim)
+#
+# Parse htaccess directives, adding them to an array to be returned by
+# reference to the caller.
+#
+# On recursive calls, $block_name refers to the directive that triggered
+# the recursion (e.g. "limit" or "limitexcept").
+#
+# If $verbatim is non-zero, this function attempts to do no analysis of
+# the lines read.  Rather, it wraps them in "verbatim" config nodes to be
+# output as-is.
+#
+# This function does some alteration of the directives itself:  converting
+# old-style Allow and Deny directives, removing directives that are no
+# longer necessary, etc.
+#
 sub parse_htaccess
 {
-  my ($openTag, $verbatim) = @_;
+  my ($block_name, $verbatim) = @_;
   my @require;
 
-  print $DEBUG_FH "INFO: enter parse_htaccess($openTag)\n" if ($verbose >= 2);
+  print $DEBUG_FH "INFO: enter parse_htaccess($block_name)\n" if ($verbose >= 2);
 
   while ( <> ) {
     my $line = $_;
@@ -152,7 +321,7 @@ sub parse_htaccess
 ##
       if ( $firstWord eq '<limit' ) {
         if ( $line =~ m/<limit\s+(.*)\s*>/i ) {
-          my @methods = split(/\s+/, $1);
+          my @methods = split(/\s+/, uc($1));
           my %directive = ( 'type' => 'limit-method', 'negate' => 0, 'methods' => \@methods );
           my $sublist = parse_htaccess('limit', 0);
           if ( $sublist && (scalar @$sublist >= 0) ) {
@@ -166,7 +335,7 @@ sub parse_htaccess
 ##
       elsif ( $firstWord eq '<limitexcept' ) {
         if ( $line =~ m/<limitexcept\s+(.*)\s*>/i ) {
-          my @methods = split(/\s+/, $1);
+          my @methods = split(/\s+/, uc($1));
           my %directive = ( 'type' => 'limit-method', 'negate' => 1, 'methods' => \@methods );
           my $sublist = parse_htaccess('limitexcept', 0);
           if ( $sublist && (scalar @$sublist >= 0) ) {
@@ -180,8 +349,9 @@ sub parse_htaccess
 ##
       elsif ( $firstWord =~ /^<\/limitexcept/ ) {
         # Ensure that we were opened by <Limit>
-        if ( $openTag ne 'limitexcept' ) {
-          print $DEBUG_FH "ERROR:  $firstWord directive encountered inside a <$openTag> block\n";
+        if ( $block_name ne 'limitexcept' ) {
+          print $DEBUG_FH "ERROR:  $firstWord directive encountered inside a <$block_name> block\n";
+          $main_rc = 2;
         }
         # Exit the loop and return
         last;
@@ -191,8 +361,9 @@ sub parse_htaccess
 ##
       elsif ( $firstWord =~ /^<\/limit/ ) {
         # Ensure that we were opened by <Limit>
-        if ( $openTag ne 'limit' ) {
-          print $DEBUG_FH "ERROR:  $firstWord directive encountered inside a <$openTag> block\n";
+        if ( $block_name ne 'limit' ) {
+          print $DEBUG_FH "ERROR:  $firstWord directive encountered inside a <$block_name> block\n";
+          $main_rc = 2;
         }
         # Exit the loop and return
         last;
@@ -219,6 +390,7 @@ sub parse_htaccess
             push(@hosts, $word);
           } else {
             print $DEBUG_FH "WARNING:  unknown Allow directive: '$word'\n" if $verbose;
+            $main_rc = 1;
           }
         }
         if ( $#hosts >= 0 ) {
@@ -226,6 +398,7 @@ sub parse_htaccess
           push(@require, \%directive);
         } elsif ( ! $ignore ) {
           print $DEBUG_FH "WARNING:  empty Allow directive\n" if $verbose;
+          $main_rc = 1;
         }
       }
 ##
@@ -250,6 +423,7 @@ sub parse_htaccess
             push(@hosts, $word);
           } else {
             print $DEBUG_FH "WARNING:  unknown Deny directive: '$word'\n" if $verbose;
+            $main_rc = 1;
           }
         }
         if ( $#hosts >= 0 ) {
@@ -257,6 +431,7 @@ sub parse_htaccess
           push(@require, \%directive);
         } elsif ( ! $ignore ) {
           print $DEBUG_FH "WARNING:  empty Deny directive\n" if $verbose;
+          $main_rc = 1;
         }
       }
 ##
@@ -290,6 +465,7 @@ sub parse_htaccess
             }
           } else {
             print $DEBUG_FH "WARNING:  unknown Require sub-type: $variant\n" if $verbose;
+            $main_rc = 1;
           }
         }
         if ( $#values >= 0 ) {
@@ -351,7 +527,7 @@ sub parse_htaccess
         $was_handled = 0;
       }
     }
-    elsif ( $firstWord =~ /^<\/$openTag/ ) {
+    elsif ( $firstWord =~ /^<\/$block_name/ ) {
       last;
     }
 ##
@@ -364,10 +540,15 @@ sub parse_htaccess
     }
   }
 
-  print $DEBUG_FH "INFO: exit parse_htaccess($openTag)\n" if ($verbose >= 2);
+  print $DEBUG_FH "INFO: exit parse_htaccess($block_name)\n" if ($verbose >= 2);
   return \@require;
 }
 
+#
+# @function index($indent)
+#
+# Write $indent spaces to our output channel.
+#
 sub indent
 {
   my ($indent) = @_;
@@ -375,6 +556,16 @@ sub indent
   print $OUTPUT_FH " " x $indent;
 }
 
+#
+# @function unparse_htaccess($directives, $indent)
+#
+# Given a refrence to an array of configuration directives (as produced by the
+# parse_htaccess() function) serialize the directives to the program's output
+# channel.
+#
+# Some transformations will be effected herein:  wrapping authorization directives
+# with <Require*> blocks to match a Satisfy directive, for example.
+#
 sub unparse_htaccess
 {
   my ($directives, $indent) = @_;
@@ -399,7 +590,7 @@ sub unparse_htaccess
     # See if there are any require directives present at this level; if not, then
     # we won't be wrapping anything anyway:
     foreach $directive (@$directives) {
-      if ( reftype($directive) eq 'HASH' && $directive->{'type'} eq 'require' && $directive->{'type'} =~ m/^require(all|any|none)$/ ) {
+      if ( reftype($directive) eq 'HASH' && $directive->{'type'} =~ m/^require(all|any|none)?$/ ) {
         $has_requires = 1;
         last;
       }
@@ -436,12 +627,12 @@ sub unparse_htaccess
 ##
           elsif ( $directive->{'type'} =~ m/^require(all|any|none)$/ ) {
             indent($indent);
-            printf $OUTPUT_FH "<%s>\n",  require_group_pretty($directive->{'type'});
+            printf $OUTPUT_FH "<%s>\n",  $require_group_pretty{$directive->{'type'}};
             if ( exists $directive->{'children'} ) {
               unparse_htaccess($directive->{'children'}, $indent + 2);
             }
             indent($indent);
-            printf $OUTPUT_FH "</%s>\n", require_group_pretty($directive->{'type'});
+            printf $OUTPUT_FH "</%s>\n", $require_group_pretty{$directive->{'type'}};
           }
           else {
             push(@remainder, $directive);
@@ -472,12 +663,12 @@ sub unparse_htaccess
 ##
       elsif ( $directive->{'type'} =~ m/^require(all|any|none)$/ ) {
         indent($indent);
-        printf $OUTPUT_FH "<%s>\n",  require_group_pretty($directive->{'type'});
+        printf $OUTPUT_FH "<%s>\n",  $require_group_pretty{$directive->{'type'}};
         if ( exists $directive->{'children'} ) {
           unparse_htaccess($directive->{'children'}, $indent + 2);
         }
         indent($indent);
-        printf $OUTPUT_FH "</%s>\n", require_group_pretty($directive->{'type'});
+        printf $OUTPUT_FH "</%s>\n", $require_group_pretty{$directive->{'type'}};
       }
 ##
 ## limit, limitexcept
@@ -518,12 +709,20 @@ sub unparse_htaccess
   print $DEBUG_FH "INFO: exit unparse_htaccess($indent)\n" if ($verbose >= 2);
 }
 
-my $requires = parse_htaccess('', 0);
+#
+# Here we get to the main program...
+#
+my $config = parse_htaccess('', 0);
 
-if ( $requires && (scalar @$requires >= 0) ) {
+# If we got a non-trivial config, then attempt to fix it and serialize it back to
+# our output channel:
+if ( $config && (scalar @$config >= 0) ) {
+	$config = fixup_limit_directives($config);
   if ( $verbose > 2 ) {
     print $DEBUG_FH "INFO: parsed htaccess file representation:  ";
-    print $DEBUG_FH Dumper $requires;
+    print $DEBUG_FH Dumper $config;
   }
-  unparse_htaccess($requires, 0);
+  unparse_htaccess($config, 0);
 }
+
+exit $main_rc;

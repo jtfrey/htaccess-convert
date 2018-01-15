@@ -2,7 +2,7 @@
 # Comments are allowed
 #
 AuthType Basic
-AuthName "Puke is fun"
+AuthName "Auth is fun"
 AuthBasicProvider ldap
 <limit GET>
   require group 4000
