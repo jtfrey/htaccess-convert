@@ -8,7 +8,12 @@ usage: ./htaccess-convert.pl {options}
   --quiet, -q             no verbosity
   --help, -h              display this help screen
 
+  --test-only, -t         tests the input file to determine if an update is
+                          necessary to remain compatible; exit code of zero if
+                          no update necessary, non-zero otherwise
+
   --whitespace, -w        preserve blank lines (by default they are discarded)
+  --no-comments, -c       remove comments
 
   --input=<filename>      read from <filename>; use the filename '-' for STDIN
     -i <filename>
@@ -57,17 +62,36 @@ Running this through the converter yields:
 
 ```
 $ ./htaccess-convert.pl --input=examples/htaccess.txt --output=htaccess-conv.txt -v
+INFO: parsing htaccess file
 INFO: enter parse_htaccess()
 INFO: enter parse_htaccess(limit)
 INFO: exit parse_htaccess(limit)
 INFO: enter parse_htaccess(limitexcept)
 WARNING:  empty Allow directive
 INFO: exit parse_htaccess(limitexcept)
+INFO: enter parse_htaccess(ifmodule)
+INFO: enter parse_htaccess(filesmatch)
+INFO: exit parse_htaccess(filesmatch)
+INFO: exit parse_htaccess(ifmodule)
 INFO: exit parse_htaccess()
+INFO: performing <limit> fixups on htaccess config
+INFO: enter fixup_limit_directives
+INFO: calling fixup_limit_directives on conditional-block children
+INFO: enter fixup_limit_directives
+INFO: calling fixup_limit_directives on file-block children
+INFO: enter fixup_limit_directives
+INFO: exit fixup_limit_directives
+INFO: exit fixup_limit_directives
+INFO: exit fixup_limit_directives
+INFO: serializing htaccess config
 INFO: enter unparse_htaccess(0)
 INFO: enter unparse_htaccess(2)
 INFO: exit unparse_htaccess(2)
 INFO: enter unparse_htaccess(2)
+INFO: exit unparse_htaccess(2)
+INFO: enter unparse_htaccess(2)
+INFO: enter unparse_htaccess(4)
+INFO: exit unparse_htaccess(4)
 INFO: exit unparse_htaccess(2)
 INFO: exit unparse_htaccess(0)
 
@@ -92,6 +116,16 @@ AddType application/vnd.ms-powerpoint   ppt
 AddType application/msword   doc
 ```
 
+A subsequent test of the converted form shows that it's now okay:
+
+```
+$ ./htaccess-convert.pl --test-only --input=htaccess-conv.txt
+INFO: htaccess config does not require updating
+
+$ echo $?
+0
+```
+
 The converter also attempts to detect the erroneously-documented use of `<Limit GET>` and remove it:
 
 ```
@@ -105,6 +139,9 @@ AuthBasicProvider ldap
 <limit GET>
   require group 4000
 </limit>
+
+$ ./htaccess-convert.pl --test-only --input=examples/htaccess-simple.txt
+INFO: htaccess config requires updating
 
 $ ./htaccess-convert.pl --input=examples/htaccess-simple.txt
 #
