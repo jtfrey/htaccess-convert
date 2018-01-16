@@ -50,16 +50,24 @@ usage: $0 {options}
   --verbose, -v           increase level of verbosity
   --quiet, -q             no verbosity
   --help, -h              display this help screen
+  
+  --whitespace, -w        preserve blank lines (by default they are discarded)
+  --no-comments, -c       remove comments
 
-  --input=<filename>      read from <filename>; use the
-    -i <filename>         filename '-' for STDIN
+  --input=<filename>      read from <filename>; use the filename '-' for STDIN
+    -i <filename>
 
-  --output=<filename>     write to <filename>; use the
-    -o <filename>         filename '-' for STDOUT
+  --output=<filename>     write to <filename>; use the filename '-' for STDOUT
+    -o <filename>
 
-  --debug=<filename>      write verbose debugging info to
-    -d <filename>         <filename>; use the filename '-'
-                          for STDERR
+  --debug=<filename>      write verbose debugging info to <filename>; use the 
+    -d <filename>         filename '-' for STDERR
+
+ exit codes:
+
+  0    success
+  1    minor issues/warnings
+  2    major issues (e.g. structural problems)
 
 ";
   exit $rc;
@@ -67,6 +75,8 @@ usage: $0 {options}
 
 my $verbose = 1;
 my $help = 0;
+my $keep_whitespace = 0;
+my $discard_comments = 0;
 my $input_file = '-';
 my $output_file = '-';
 my $debug_file = '-';
@@ -80,6 +90,10 @@ GetOptions(
     'quiet' => sub { $verbose = 0 },
     'h' => \$help,
     'help' => \$help,
+    'w' => \$keep_whitespace,
+    'whitespace' => \$keep_whitespace,
+    'c' => \$discard_comments,
+    'no-comments' => \$discard_comments,
     'i=s' => \$input_file,
     'input=s' => \$input_file,
     'o=s' => \$output_file,
@@ -190,7 +204,7 @@ sub fixup_limit_directives
 	# We expect an array:
 	return $directives if ( reftype($directives) ne 'ARRAY' );
 
-  printf $DEBUG_FH "INFO: enter fixup_limit_directives\n";
+  printf $DEBUG_FH "INFO: enter fixup_limit_directives\n" if ($verbose >= 2);
 
 	# Check for a <limit GET> container in the current list level:
 	foreach $directive (@$directives) {
@@ -228,7 +242,7 @@ sub fixup_limit_directives
 
 			if ( reftype($directive) eq 'HASH' ) {
 				if ( $directive->{'type'} eq 'limit-method' ) {
-					push(@new_list, comment_node('htaccess-convert removed unnecessary <limit GET> block'));
+					push(@new_list, comment_node('htaccess-convert removed unnecessary <limit GET> block')) if (! $discard_comments);
 
 					# Loop over the child directives:
 					foreach $directive (@{$directive->{'children'}}) {
@@ -259,11 +273,11 @@ sub fixup_limit_directives
 			my @children = (\%deny_all);
 			my @methods = keys %need_methods;
 			my %limit = ( 'type' => 'limit-method', 'negate' => 0, 'methods' => \@methods, 'children' => \@children );
-			push(@$directives, comment_node('Added by htaccess-convert', 'Augments the other method-based <limit> blocks already present'));
+			push(@$directives, comment_node('Added by htaccess-convert', 'Augments the other method-based <limit> blocks already present')) if (! $discard_comments);
 			push(@$directives, \%limit);
 		}
 	}
-  printf $DEBUG_FH "INFO: exit fixup_limit_directives\n";
+  printf $DEBUG_FH "INFO: exit fixup_limit_directives\n" if ($verbose >= 2);
 	return $directives;
 }
 
@@ -295,14 +309,21 @@ sub parse_htaccess
     my $line = $_;
 
     if ( /^\s*#/ ) {
-      # Comment lines can stay...
-      $line =~ s/^\s+|\s+$//g;
-      my %directive = ( 'type' => 'verbatim', 'value' => $line );
-      push(@config, \%directive);
+      # Comment lines can stay?
+      if ( ! $discard_comments ) {
+        $line =~ s/^\s+|\s+$//g;
+        my %directive = ( 'type' => 'verbatim', 'value' => $line );
+        push(@config, \%directive);
+      }
       next;
     }
     if ( /^\s*$/ ) {
-      # Drop blank lines
+      # Drop blank lines?
+      if ( $keep_whitespace ) {
+        chomp($line);
+        my %directive = ( 'type' => 'verbatim', 'value' => $line );
+        push(@config, \%directive);
+      }
       next;
     }
 

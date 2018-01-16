@@ -2,21 +2,29 @@
 Perl utility to update UD legacy web server htaccess files to Apache 2.4.  Rewrites "require group" directives to use LDAP authorization.  Automatically generates <RequireAny> or <RequireAll> groupings based on the Satisfy keyword.
 
 ```
-usage: htaccess-convert.pl {options}
+usage: ./htaccess-convert.pl {options}
 
   --verbose, -v           increase level of verbosity
   --quiet, -q             no verbosity
   --help, -h              display this help screen
 
-  --input=<filename>      read from <filename>; use the
-    -i <filename>         filename '-' for STDIN
+  --whitespace, -w        preserve blank lines (by default they are discarded)
 
-  --output=<filename>     write to <filename>; use the
-    -o <filename>         filename '-' for STDOUT
+  --input=<filename>      read from <filename>; use the filename '-' for STDIN
+    -i <filename>
 
-  --debug=<filename>      write verbose debugging info to
-    -d <filename>         <filename>; use the filename '-'
-                          for STDERR
+  --output=<filename>     write to <filename>; use the filename '-' for STDOUT
+    -o <filename>
+
+  --debug=<filename>      write verbose debugging info to <filename>; use the
+    -d <filename>         filename '-' for STDERR
+
+ exit codes:
+
+  0    success
+  1    minor issues/warnings
+  2    major issues (e.g. structural problems)
+
 ```
 
 For example, consider the following htaccess file:
@@ -111,7 +119,7 @@ Require ldap-group cn=4000,ou=Groups,o=udel.edu
 If multiple `<Limit>` blocks are present, then the converter ensures that *at least* the GET and POST methods are covered:
 
 ```
-$ cat examples/htaccess-limits.txt 
+$ cat examples/htaccess-limits.txt
 <limit GET>
   order deny,allow
   allow from 128.175 boffo.net
@@ -125,7 +133,7 @@ $ cat examples/htaccess-limits.txt
   satisfy all
 </LIMIT>
 
-$ ./htaccess-convert.pl < examples/htaccess-limits.txt 
+$ ./htaccess-convert.pl < examples/htaccess-limits.txt
 <Limit GET>
   <RequireAny>
     Require ip 128.175 boffo.net
