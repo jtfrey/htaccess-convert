@@ -50,7 +50,11 @@ usage: $0 {options}
   --verbose, -v           increase level of verbosity
   --quiet, -q             no verbosity
   --help, -h              display this help screen
-  
+
+  --test-only, -t         tests the input file to determine if an update is
+                          necessary to remain compatible; exit code of zero if
+                          no update necessary, non-zero otherwise
+
   --whitespace, -w        preserve blank lines (by default they are discarded)
   --no-comments, -c       remove comments
 
@@ -60,7 +64,7 @@ usage: $0 {options}
   --output=<filename>     write to <filename>; use the filename '-' for STDOUT
     -o <filename>
 
-  --debug=<filename>      write verbose debugging info to <filename>; use the 
+  --debug=<filename>      write verbose debugging info to <filename>; use the
     -d <filename>         filename '-' for STDERR
 
  exit codes:
@@ -77,10 +81,12 @@ my $verbose = 1;
 my $help = 0;
 my $keep_whitespace = 0;
 my $discard_comments = 0;
+my $test_only = 0;
 my $input_file = '-';
 my $output_file = '-';
 my $debug_file = '-';
 my $main_rc = 0;
+my $needs_update = 0;
 
 Getopt::Long::Configure ("bundling");
 GetOptions(
@@ -90,6 +96,8 @@ GetOptions(
     'quiet' => sub { $verbose = 0 },
     'h' => \$help,
     'help' => \$help,
+    't' => \$test_only,
+    'test-only' => \$test_only,
     'w' => \$keep_whitespace,
     'whitespace' => \$keep_whitespace,
     'c' => \$discard_comments,
@@ -110,7 +118,7 @@ my $DEBUG_FH = *STDERR;
 if ( $input_file && $input_file ne '-' ) {
   open($INPUT_FH, "<", $input_file) or die "ERROR: unable to open $input_file for reading: $!";
 }
-if ( $output_file && $output_file ne '-' ) {
+if ( ! $test_only && $output_file && $output_file ne '-' ) {
   open($OUTPUT_FH, ">", $output_file) or die "ERROR: unable to open $output_file for writing: $!";
 }
 if ( $debug_file && $debug_file ne '-' ) {
@@ -237,6 +245,8 @@ sub fixup_limit_directives
 		#
 		my @new_list;
 
+
+    $needs_update = 1;
 		foreach $directive (@$directives) {
 			my $was_handled = 0;
 
@@ -273,6 +283,8 @@ sub fixup_limit_directives
 			my @children = (\%deny_all);
 			my @methods = keys %need_methods;
 			my %limit = ( 'type' => 'limit-method', 'negate' => 0, 'methods' => \@methods, 'children' => \@children );
+
+      $needs_update = 1;
 			push(@$directives, comment_node('Added by htaccess-convert', 'Augments the other method-based <limit> blocks already present')) if (! $discard_comments);
 			push(@$directives, \%limit);
 		}
@@ -472,6 +484,8 @@ sub parse_htaccess
         # Loop over words -- they should be hostnames/IPs:
         my @hosts;
         my $ignore = 0;
+
+        $needs_update = 1;
         foreach my $word (@words) {
           if ( $word =~ m/^(allow|from)$/i ) {
             next;
@@ -505,6 +519,8 @@ sub parse_htaccess
         # Loop over words -- they should be hostnames/IPs:
         my @hosts;
         my $ignore = 0;
+
+        $needs_update = 1;
         foreach my $word (@words) {
           if ( $word =~ m/^(deny|from)$/i ) {
             next;
@@ -544,6 +560,7 @@ sub parse_htaccess
         if ( $variant eq 'valid_user' ) {
           # Correct misspellings:
           $variant = 'valid-user';
+          $needs_update = 1;
         }
 
         if ( $variant ne 'valid-user' ) {
@@ -557,6 +574,7 @@ sub parse_htaccess
               }
             }
             if ( $variant eq 'group' ) {
+              $needs_update = 1;
               # group has been morphed to ldap-group now:
               $variant = 'ldap-group';
             }
@@ -574,6 +592,7 @@ sub parse_htaccess
 ## Order
 ##
       elsif ( $firstWord eq 'order' ) {
+        $needs_update = 1;
         if ( $line =~ m/order\s+allow\s*,\s*deny/i ) {
           my %directive = ( 'type' => 'order', 'order' => 'AD' );
           push(@config, \%directive);
@@ -591,6 +610,8 @@ sub parse_htaccess
         # Is it an "any" or an "all" directive:
         #
         my $is_all = 1;
+
+        $needs_update = 1;
         foreach my $word (@words) {
           if ( $word =~ /^all$/i ) {
             $is_all = 1;
@@ -838,19 +859,23 @@ sub unparse_htaccess
 print $DEBUG_FH "INFO: parsing htaccess file\n" if ($verbose >= 2);
 my $config = parse_htaccess('', 0);
 
-# If we got a non-trivial config, then attempt to fix it and serialize it back to
-# our output channel:
-if ( $config && (scalar @$config >= 0) ) {
-  print $DEBUG_FH "INFO: performing <limit> fixups on htaccess config\n" if ($verbose >= 2);
-	$config = fixup_limit_directives($config);
-  if ( $verbose > 2 ) {
-    print $DEBUG_FH "INFO: parsed htaccess file representation:  ";
-    print $DEBUG_FH Dumper $config;
+if ( $test_only ) {
+  $main_rc = $needs_update;
+  printf $DEBUG_FH "INFO: htaccess config %s updating\n", ($needs_update ? "requires" : "does not require") if ($verbose >= 1);
+} else {
+  # If we got a non-trivial config, then attempt to fix it and serialize it back to
+  # our output channel:
+  if ( $config && (scalar @$config >= 0) ) {
+    print $DEBUG_FH "INFO: performing <limit> fixups on htaccess config\n" if ($verbose >= 2);
+    $config = fixup_limit_directives($config);
+    if ( $verbose > 2 ) {
+      print $DEBUG_FH "INFO: parsed htaccess file representation:  ";
+      print $DEBUG_FH Dumper $config;
+    }
+    print $DEBUG_FH "INFO: serializing htaccess config\n" if ($verbose >= 2);
+    unparse_htaccess($config, 0);
+  } elsif ($verbose >= 2) {
+    print $DEBUG_FH "INFO: empty htaccess configuration\n";
   }
-  print $DEBUG_FH "INFO: serializing htaccess config\n" if ($verbose >= 2);
-  unparse_htaccess($config, 0);
-} elsif ($verbose >= 2) {
-  print $DEBUG_FH "INFO: empty htaccess configuration\n";
 }
-
 exit $main_rc;
