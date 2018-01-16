@@ -115,7 +115,7 @@ sub comment_node
 {
 	my %node = ( 'type' => 'verbatim' );
 	my $comment = '##';
-	
+
 	if ( scalar(@_) <= 0 ) {
 		$comment = "##\n## Added by htaccess-convert\n##";
 	} else {
@@ -160,7 +160,7 @@ sub hash_of_all_methods_except
 	my (@methods) = @_;
 	my $method;
 	my %list = map({ $_ => 1 } @mandatory_methods);
-	
+
 	foreach $method (@methods) {
 		delete $list{$method} if ( exists $list{$method} );
 	}
@@ -186,16 +186,18 @@ sub fixup_limit_directives
 	my ($directives) = @_;
 	my $directive;
 	my %methods_seen;
-	
+
 	# We expect an array:
 	return $directives if ( reftype($directives) ne 'ARRAY' );
-	
+
+  printf $DEBUG_FH "INFO: enter fixup_limit_directives\n";
+
 	# Check for a <limit GET> container in the current list level:
 	foreach $directive (@$directives) {
     if ( reftype($directive) eq 'HASH' ) {
     	if ( $directive->{'type'} eq 'limit-method' ) {
         my $methods = $directive->{'methods'};
-        
+
         # Add the methods covered by this directive:
         if ( ! $directive->{'negate'} ) {
 	        %methods_seen = (%methods_seen, map({ $_ => 1 } @$methods));
@@ -203,26 +205,31 @@ sub fixup_limit_directives
   				%methods_seen = (%methods_seen, hash_of_all_methods_except(@$methods));
      		}
       }
+      elsif ( exists $directive->{'children'} ) {
+        printf $DEBUG_FH "INFO: calling fixup_limit_directives on %s children\n", $directive->{'type'} if ($verbose >= 2);
+        # Check at the next level down:
+        $directive->{'children'} = fixup_limit_directives($directive->{'children'});
+      }
     }
 	}
-	
+
 	# Is it JUST the GET method?
 	my $how_many_methods = scalar(keys %methods_seen);
-	
+
 	if ( $how_many_methods == 1 && exists $methods_seen{'GET'} ) {
 		#
 		# Remove the <limit GET> block and replace with the directives that were
 		# inside that block.
 		#
 		my @new_list;
-		
+
 		foreach $directive (@$directives) {
 			my $was_handled = 0;
-			
+
 			if ( reftype($directive) eq 'HASH' ) {
 				if ( $directive->{'type'} eq 'limit-method' ) {
 					push(@new_list, comment_node('htaccess-convert removed unnecessary <limit GET> block'));
-					
+
 					# Loop over the child directives:
 					foreach $directive (@{$directive->{'children'}}) {
 						push(@new_list, $directive);
@@ -241,7 +248,7 @@ sub fixup_limit_directives
 		# cover them if necessary:
 		#
 		my %need_methods = map({ $_ => 1} @mandatory_methods);
-		
+
 		foreach my $method (keys %methods_seen) {
 			if ( exists $need_methods{$method} ) {
 				delete $need_methods{$method};
@@ -256,6 +263,7 @@ sub fixup_limit_directives
 			push(@$directives, \%limit);
 		}
 	}
+  printf $DEBUG_FH "INFO: exit fixup_limit_directives\n";
 	return $directives;
 }
 
@@ -279,7 +287,7 @@ sub fixup_limit_directives
 sub parse_htaccess
 {
   my ($block_name, $verbatim) = @_;
-  my @require;
+  my @config;
 
   print $DEBUG_FH "INFO: enter parse_htaccess($block_name)\n" if ($verbose >= 2);
 
@@ -290,7 +298,7 @@ sub parse_htaccess
       # Comment lines can stay...
       $line =~ s/^\s+|\s+$//g;
       my %directive = ( 'type' => 'verbatim', 'value' => $line );
-      push(@require, \%directive);
+      push(@config, \%directive);
       next;
     }
     if ( /^\s*$/ ) {
@@ -327,7 +335,10 @@ sub parse_htaccess
           if ( $sublist && (scalar @$sublist >= 0) ) {
             $directive{'children'} = $sublist;
           }
-          push(@require, \%directive);
+          push(@config, \%directive);
+        } else {
+          print $DEBUG_FH "WARNING:  empty list in <limit> block\n";
+          $main_rc = 1;
         }
       }
 ##
@@ -341,7 +352,10 @@ sub parse_htaccess
           if ( $sublist && (scalar @$sublist >= 0) ) {
             $directive{'children'} = $sublist;
           }
-          push(@require, \%directive);
+          push(@config, \%directive);
+        } else {
+          print $DEBUG_FH "WARNING:  empty list in <limitexcept> block\n";
+          $main_rc = 1;
         }
       }
 ##
@@ -357,11 +371,73 @@ sub parse_htaccess
         last;
       }
 ##
-## </Limit>
+## </Limit>  (keep this after </limitexcept> because it would match that, too!)
 ##
       elsif ( $firstWord =~ /^<\/limit/ ) {
         # Ensure that we were opened by <Limit>
         if ( $block_name ne 'limit' ) {
+          print $DEBUG_FH "ERROR:  $firstWord directive encountered inside a <$block_name> block\n";
+          $main_rc = 2;
+        }
+        # Exit the loop and return
+        last;
+      }
+##
+## <IfDefine, <IfModule, <IfVersion
+##
+      elsif ( $firstWord =~ /^<(if(define|module|version))/ ) {
+        my $variant = $1;
+        my $subtype = $2;
+
+        if ( $line =~ m/<(if(define|module|version))\s+(.*)\s*>/i ) {
+          my %directive = ( 'type' => 'conditional-block', 'subtype' => $subtype, 'argument' => $3 );
+          my $sublist = parse_htaccess($variant, 0);
+          if ( $sublist && (scalar @$sublist >= 0) ) {
+            $directive{'children'} = $sublist;
+          }
+          push(@config, \%directive);
+        } else {
+          print $DEBUG_FH "WARNING:  empty argument list in <$variant> block\n";
+          $main_rc = 1;
+        }
+      }
+##
+## </IfDefine, </IfModule, </IfVersion
+##
+      elsif ( $firstWord =~ /^<\/(if(define|module|version))/ ) {
+        # Ensure that we were opened by the same directive
+        if ( $block_name ne $1 ) {
+          print $DEBUG_FH "ERROR:  $firstWord directive encountered inside a <$block_name> block\n";
+          $main_rc = 2;
+        }
+        # Exit the loop and return
+        last;
+      }
+##
+## <Files, <FilesMatch
+##
+      elsif ( $firstWord =~ /^<(files(match)?)/ ) {
+        my $variant = $1;
+        my $subtype = $2;
+
+        if ( $line =~ m/<(files(match)?)\s+(.*)\s*>/i ) {
+          my %directive = ( 'type' => 'file-block', 'subtype' => $subtype, 'argument' => $3 );
+          my $sublist = parse_htaccess($variant, 0);
+          if ( $sublist && (scalar @$sublist >= 0) ) {
+            $directive{'children'} = $sublist;
+          }
+          push(@config, \%directive);
+        } else {
+          print $DEBUG_FH "WARNING:  empty argument list in <$variant> block\n";
+          $main_rc = 1;
+        }
+      }
+##
+## </Files, </FilesMatch
+##
+      elsif ( $firstWord =~ /^<\/(files(match))?/ ) {
+        # Ensure that we were opened by the same directive
+        if ( $block_name ne $1 ) {
           print $DEBUG_FH "ERROR:  $firstWord directive encountered inside a <$block_name> block\n";
           $main_rc = 2;
         }
@@ -382,7 +458,7 @@ sub parse_htaccess
           elsif ( $word =~ m/^all$/i ) {
             @hosts = ();
             my %directive = ( 'type' => 'require', 'negate' => 0, 'subtype' => 'all granted' );
-            push(@require, \%directive);
+            push(@config, \%directive);
             $ignore = 1;
             last;
           }
@@ -395,7 +471,7 @@ sub parse_htaccess
         }
         if ( $#hosts >= 0 ) {
           my %directive = ( 'type' => 'require', 'negate' => 0, 'subtype' => 'ip', 'values' => \@hosts );
-          push(@require, \%directive);
+          push(@config, \%directive);
         } elsif ( ! $ignore ) {
           print $DEBUG_FH "WARNING:  empty Allow directive\n" if $verbose;
           $main_rc = 1;
@@ -415,7 +491,7 @@ sub parse_htaccess
           elsif ( $word =~ m/^all$/i ) {
             @hosts = ();
             my %directive = ( 'type' => 'require', 'negate' => 0, 'subtype' => 'all denied' );
-            push(@require, \%directive);
+            push(@config, \%directive);
             $ignore = 1;
             last;
           }
@@ -428,7 +504,7 @@ sub parse_htaccess
         }
         if ( $#hosts >= 0 ) {
           my %directive = ( 'type' => 'require', 'negate' => 1, 'subtype' => 'ip', 'values' => \@hosts );
-          push(@require, \%directive);
+          push(@config, \%directive);
         } elsif ( ! $ignore ) {
           print $DEBUG_FH "WARNING:  empty Deny directive\n" if $verbose;
           $main_rc = 1;
@@ -470,7 +546,7 @@ sub parse_htaccess
         }
         if ( $#values >= 0 ) {
           my %directive = ( 'type' => 'require', 'negate' => 0, 'subtype' => $variant, 'values' => \@values );
-          push(@require, \%directive);
+          push(@config, \%directive);
         }
       }
 ##
@@ -479,11 +555,11 @@ sub parse_htaccess
       elsif ( $firstWord eq 'order' ) {
         if ( $line =~ m/order\s+allow\s*,\s*deny/i ) {
           my %directive = ( 'type' => 'order', 'order' => 'AD' );
-          push(@require, \%directive);
+          push(@config, \%directive);
         }
         elsif ( $line =~ m/order\s+deny\s*,\s*allow/i ) {
           my %directive = ( 'type' => 'order', 'order' => 'DA' );
-          push(@require, \%directive);
+          push(@config, \%directive);
         }
       }
 ##
@@ -506,10 +582,10 @@ sub parse_htaccess
         }
         if ( $is_all ) {
           my %directive = ( 'type' => 'satisfy', 'subtype' => 'all' );
-          push(@require, \%directive);
+          push(@config, \%directive);
         } else {
           my %directive = ( 'type' => 'satisfy', 'subtype' => 'any' );
-          push(@require, \%directive);
+          push(@config, \%directive);
         }
       }
 ##
@@ -521,7 +597,7 @@ sub parse_htaccess
         if ( $sublist && (scalar @$sublist >= 0) ) {
           $directive{'children'} = $sublist;
         }
-        push(@require, \%directive);
+        push(@config, \%directive);
       }
       else {
         $was_handled = 0;
@@ -536,12 +612,12 @@ sub parse_htaccess
     if ( ! $was_handled ) {
       $line =~ s/^\s+|\s+$//g;
       my %directive = ( 'type' => 'verbatim', 'value' => $line );
-      push(@require, \%directive);
+      push(@config, \%directive);
     }
   }
 
   print $DEBUG_FH "INFO: exit parse_htaccess($block_name)\n" if ($verbose >= 2);
-  return \@require;
+  return \@config;
 }
 
 #
@@ -671,7 +747,7 @@ sub unparse_htaccess
         printf $OUTPUT_FH "</%s>\n", $require_group_pretty{$directive->{'type'}};
       }
 ##
-## limit, limitexcept
+## <limit>, <limitexcept>
 ##
       elsif ( $directive->{'type'} eq 'limit-method' ) {
         my $methods = $directive->{'methods'};
@@ -682,6 +758,32 @@ sub unparse_htaccess
         }
         indent($indent);
         printf $OUTPUT_FH "</Limit%s>\n", ($directive->{'negate'} ? 'Except' : '');
+      }
+##
+## <ifdefine>, <ifmodule>, <ifversion>
+##
+      elsif ( $directive->{'type'} eq 'conditional-block' ) {
+        my $argument = $directive->{'argument'};
+        indent($indent);
+        printf $OUTPUT_FH "<If%s %s>\n", ucfirst($directive->{'subtype'}), $argument;
+        if ( exists $directive->{'children'} ) {
+          unparse_htaccess($directive->{'children'}, $indent + 2);
+        }
+        indent($indent);
+        printf $OUTPUT_FH "</If%s>\n", ucfirst($directive->{'subtype'});
+      }
+##
+## <files>, <filesmatch>
+##
+      elsif ( $directive->{'type'} eq 'file-block' ) {
+        my $argument = $directive->{'argument'};
+        indent($indent);
+        printf $OUTPUT_FH "<Files%s %s>\n", ucfirst($directive->{'subtype'}), $argument;
+        if ( exists $directive->{'children'} ) {
+          unparse_htaccess($directive->{'children'}, $indent + 2);
+        }
+        indent($indent);
+        printf $OUTPUT_FH "</Files%s>\n", ucfirst($directive->{'subtype'});
       }
 ##
 ## require
@@ -712,17 +814,22 @@ sub unparse_htaccess
 #
 # Here we get to the main program...
 #
+print $DEBUG_FH "INFO: parsing htaccess file\n" if ($verbose >= 2);
 my $config = parse_htaccess('', 0);
 
 # If we got a non-trivial config, then attempt to fix it and serialize it back to
 # our output channel:
 if ( $config && (scalar @$config >= 0) ) {
+  print $DEBUG_FH "INFO: performing <limit> fixups on htaccess config\n" if ($verbose >= 2);
 	$config = fixup_limit_directives($config);
   if ( $verbose > 2 ) {
     print $DEBUG_FH "INFO: parsed htaccess file representation:  ";
     print $DEBUG_FH Dumper $config;
   }
+  print $DEBUG_FH "INFO: serializing htaccess config\n" if ($verbose >= 2);
   unparse_htaccess($config, 0);
+} elsif ($verbose >= 2) {
+  print $DEBUG_FH "INFO: empty htaccess configuration\n";
 }
 
 exit $main_rc;
