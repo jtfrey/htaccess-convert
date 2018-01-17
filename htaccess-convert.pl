@@ -54,6 +54,8 @@ usage: $0 {options}
   --test-only, -t         tests the input file to determine if an update is
                           necessary to remain compatible; exit code of zero if
                           no update necessary, non-zero otherwise
+    --invert-exit, -x     inverse the exit codes:  zero if update necessary,
+                          non-zero otherwise
 
   --whitespace, -w        preserve blank lines (by default they are discarded)
   --no-comments, -c       remove comments
@@ -82,6 +84,7 @@ my $help = 0;
 my $keep_whitespace = 0;
 my $discard_comments = 0;
 my $test_only = 0;
+my $test_only_invert_exit = 0;
 my $input_file = '-';
 my $output_file = '-';
 my $debug_file = '-';
@@ -98,6 +101,8 @@ GetOptions(
     'help' => \$help,
     't' => \$test_only,
     'test-only' => \$test_only,
+    'x' => \$test_only_invert_exit,
+    'invert-exit' => \$test_only_invert_exit,
     'w' => \$keep_whitespace,
     'whitespace' => \$keep_whitespace,
     'c' => \$discard_comments,
@@ -468,7 +473,7 @@ sub parse_htaccess
 ##
 ## </Files, </FilesMatch
 ##
-      elsif ( $firstWord =~ /^<\/(files(match))?/ ) {
+      elsif ( $firstWord =~ m/^<\/(files(match)?)/ ) {
         # Ensure that we were opened by the same directive
         if ( $block_name ne $1 ) {
           print $DEBUG_FH "ERROR:  $firstWord directive encountered inside a <$block_name> block\n";
@@ -564,7 +569,7 @@ sub parse_htaccess
         }
 
         if ( $variant ne 'valid-user' ) {
-          if ( $variant =~ /^(ldap-(group|user|attribute)|group|user)$/ ) {
+          if ( $variant =~ /^(ldap-(group|user|attribute|dn|filter)|group|user)$/ ) {
             foreach my $entity (@entities) {
               if ( $variant eq 'ldap-group' || $variant eq 'ldap-user' || $variant eq 'ldap-attribute' || $variant eq 'user' ) {
                 push(@values, $entity);
@@ -585,6 +590,9 @@ sub parse_htaccess
         }
         if ( $#values >= 0 ) {
           my %directive = ( 'type' => 'require', 'negate' => 0, 'subtype' => $variant, 'values' => \@values );
+          push(@config, \%directive);
+        } elsif ( $variant eq 'valid-user' ) {
+          my %directive = ( 'type' => 'require', 'negate' => 0, 'subtype' => $variant );
           push(@config, \%directive);
         }
       }
@@ -860,7 +868,11 @@ print $DEBUG_FH "INFO: parsing htaccess file\n" if ($verbose >= 2);
 my $config = parse_htaccess('', 0);
 
 if ( $test_only ) {
-  $main_rc = $needs_update;
+  if ( $test_only_invert_exit ) {
+    $main_rc = ! $needs_update;
+  } else {
+    $main_rc = $needs_update;
+  }
   printf $DEBUG_FH "INFO: htaccess config %s updating\n", ($needs_update ? "requires" : "does not require") if ($verbose >= 1);
 } else {
   # If we got a non-trivial config, then attempt to fix it and serialize it back to
